@@ -2,7 +2,6 @@ import React, { useEffect, useRef, useState } from 'react';
 import { Terminal } from 'xterm';
 import { FitAddon } from 'xterm-addon-fit';
 import { ClipboardAddon } from '@xterm/addon-clipboard';
-import { WebglAddon } from '@xterm/addon-webgl';
 import 'xterm/css/xterm.css';
 
 // CSS to remove xterm focus outline
@@ -243,15 +242,9 @@ function Shell({ selectedProject, selectedSession, isActive }) {
 
     fitAddon.current = new FitAddon();
     const clipboardAddon = new ClipboardAddon();
-    const webglAddon = new WebglAddon();
     
     terminal.current.loadAddon(fitAddon.current);
     terminal.current.loadAddon(clipboardAddon);
-    
-    try {
-      terminal.current.loadAddon(webglAddon);
-    } catch (error) {
-    }
     
     terminal.current.open(terminalRef.current);
 

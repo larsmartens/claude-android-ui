@@ -1,5 +1,5 @@
 import express from 'express';
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs';
 import { userDb, db } from '../database/db.js';
 import { generateToken, authenticateToken } from '../middleware/auth.js';
 
@@ -33,13 +33,10 @@ router.post('/register', async (req, res) => {
       return res.status(400).json({ error: 'Username must be at least 3 characters, password at least 6 characters' });
     }
     
-    // Use a transaction to prevent race conditions
-    db.prepare('BEGIN').run();
     try {
       // Check if users already exist (only allow one user)
       const hasUsers = userDb.hasUsers();
       if (hasUsers) {
-        db.prepare('ROLLBACK').run();
         return res.status(403).json({ error: 'User already exists. This is a single-user system.' });
       }
       
@@ -55,8 +52,6 @@ router.post('/register', async (req, res) => {
       
       // Update last login
       userDb.updateLastLogin(user.id);
-
-      db.prepare('COMMIT').run();
       
       res.json({
         success: true,
@@ -64,7 +59,6 @@ router.post('/register', async (req, res) => {
         token
       });
     } catch (error) {
-      db.prepare('ROLLBACK').run();
       throw error;
     }
     

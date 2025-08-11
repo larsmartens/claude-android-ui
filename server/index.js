@@ -32,7 +32,6 @@ import cors from 'cors';
 import { promises as fsPromises } from 'fs';
 import { spawn } from 'child_process';
 import os from 'os';
-import pty from 'node-pty';
 import fetch from 'node-fetch';
 import mime from 'mime-types';
 
@@ -538,10 +537,7 @@ function handleShellConnection(ws) {
                     const shell = os.platform() === 'win32' ? 'powershell.exe' : 'bash';
                     const shellArgs = os.platform() === 'win32' ? ['-Command', shellCommand] : ['-c', shellCommand];
 
-                    shellProcess = pty.spawn(shell, shellArgs, {
-                        name: 'xterm-256color',
-                        cols: 80,
-                        rows: 24,
+                    shellProcess = spawn(shell, shellArgs, {
                         cwd: process.env.HOME || (os.platform() === 'win32' ? process.env.USERPROFILE : '/'),
                         env: {
                             ...process.env,
@@ -553,10 +549,10 @@ function handleShellConnection(ws) {
                         }
                     });
 
-                    console.log('🟢 Shell process started with PTY, PID:', shellProcess.pid);
+                    console.log('🟢 Shell process started, PID:', shellProcess.pid);
 
                     // Handle data output
-                    shellProcess.onData((data) => {
+                    shellProcess.stdout.on('data', (data) => {
                         if (ws.readyState === ws.OPEN) {
                             let outputData = data;
 
@@ -596,18 +592,28 @@ function handleShellConnection(ws) {
                             // Send regular output
                             ws.send(JSON.stringify({
                                 type: 'output',
-                                data: outputData
+                                data: outputData.toString()
+                            }));
+                        }
+                    });
+
+                    // Handle stderr
+                    shellProcess.stderr.on('data', (data) => {
+                        if (ws.readyState === ws.OPEN) {
+                            ws.send(JSON.stringify({
+                                type: 'output',
+                                data: data.toString()
                             }));
                         }
                     });
 
                     // Handle process exit
-                    shellProcess.onExit((exitCode) => {
-                        console.log('🔚 Shell process exited with code:', exitCode.exitCode, 'signal:', exitCode.signal);
+                    shellProcess.on('exit', (code, signal) => {
+                        console.log('🔚 Shell process exited with code:', code, 'signal:', signal);
                         if (ws.readyState === ws.OPEN) {
                             ws.send(JSON.stringify({
                                 type: 'output',
-                                data: `\r\n\x1b[33mProcess exited with code ${exitCode.exitCode}${exitCode.signal ? ` (${exitCode.signal})` : ''}\x1b[0m\r\n`
+                                data: `\r\n\x1b[33mProcess exited with code ${code}${signal ? ` (${signal})` : ''}\x1b[0m\r\n`
                             }));
                         }
                         shellProcess = null;
@@ -623,9 +629,9 @@ function handleShellConnection(ws) {
 
             } else if (data.type === 'input') {
                 // Send input to shell process
-                if (shellProcess && shellProcess.write) {
+                if (shellProcess && shellProcess.stdin && shellProcess.stdin.writable) {
                     try {
-                        shellProcess.write(data.data);
+                        shellProcess.stdin.write(data.data);
                     } catch (error) {
                         console.error('Error writing to shell:', error);
                     }
@@ -633,11 +639,8 @@ function handleShellConnection(ws) {
                     console.warn('No active shell process to send input to');
                 }
             } else if (data.type === 'resize') {
-                // Handle terminal resize
-                if (shellProcess && shellProcess.resize) {
-                    console.log('Terminal resize requested:', data.cols, 'x', data.rows);
-                    shellProcess.resize(data.cols, data.rows);
-                }
+                // Terminal resize not supported with regular spawn
+                console.log('Terminal resize requested but not supported without pty:', data.cols, 'x', data.rows);
             }
         } catch (error) {
             console.error('❌ Shell WebSocket error:', error.message);
@@ -652,9 +655,9 @@ function handleShellConnection(ws) {
 
     ws.on('close', () => {
         console.log('🔌 Shell client disconnected');
-        if (shellProcess && shellProcess.kill) {
+        if (shellProcess && !shellProcess.killed) {
             console.log('🔴 Killing shell process:', shellProcess.pid);
-            shellProcess.kill();
+            shellProcess.kill('SIGTERM');
         }
     });
 
