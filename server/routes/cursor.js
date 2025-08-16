@@ -3,8 +3,9 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import os from 'os';
 import { spawn } from 'child_process';
-import sqlite3 from 'sqlite3';
-import { open } from 'sqlite';
+// import sqlite3 from 'sqlite3';
+// import { open } from 'sqlite';
+// SQLite imports disabled for Android/Termux compatibility
 import crypto from 'crypto';
 
 const router = express.Router();

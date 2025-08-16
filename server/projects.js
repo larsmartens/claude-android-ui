@@ -62,8 +62,8 @@ import fsSync from 'fs';
 import path from 'path';
 import readline from 'readline';
 import crypto from 'crypto';
-import sqlite3 from 'sqlite3';
-import { open } from 'sqlite';
+// SQLite imports removed for Android/Termux compatibility
+// Cursor sessions will be disabled for this build
 import os from 'os';
 
 // Cache for extracted project directories
