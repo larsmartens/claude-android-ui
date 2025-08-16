@@ -18,6 +18,8 @@ import CodeEditor from './CodeEditor';
 import Shell from './Shell';
 import GitPanel from './GitPanel';
 import ErrorBoundary from './ErrorBoundary';
+import ClaudeLogo from './ClaudeLogo';
+import CursorLogo from './CursorLogo';
 
 function MainContent({ 
   selectedProject, 
@@ -153,35 +155,46 @@ function MainContent({
                 </svg>
               </button>
             )}
-            <div className="min-w-0">
-              {activeTab === 'chat' && selectedSession ? (
-                <div>
-                  <h2 className="text-base sm:text-lg font-semibold text-gray-900 dark:text-white truncate">
-                    {selectedSession.summary}
-                  </h2>
-                  <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                    {selectedProject.displayName} <span className="hidden sm:inline">• {selectedSession.id}</span>
-                  </div>
-                </div>
-              ) : activeTab === 'chat' && !selectedSession ? (
-                <div>
-                  <h2 className="text-base sm:text-lg font-semibold text-gray-900 dark:text-white">
-                    New Session
-                  </h2>
-                  <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                    {selectedProject.displayName}
-                  </div>
-                </div>
-              ) : (
-                <div>
-                  <h2 className="text-base sm:text-lg font-semibold text-gray-900 dark:text-white">
-                    {activeTab === 'files' ? 'Project Files' : activeTab === 'git' ? 'Source Control' : 'Project'}
-                  </h2>
-                  <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
-                    {selectedProject.displayName}
-                  </div>
+            <div className="min-w-0 flex items-center gap-2">
+              {activeTab === 'chat' && selectedSession && (
+                <div className="w-6 h-6 flex-shrink-0 flex items-center justify-center">
+                  {selectedSession.__provider === 'cursor' ? (
+                    <CursorLogo className="w-5 h-5" />
+                  ) : (
+                    <ClaudeLogo className="w-5 h-5" />
+                  )}
                 </div>
               )}
+              <div className="flex-1 min-w-0">
+                {activeTab === 'chat' && selectedSession ? (
+                  <div>
+                    <h2 className="text-base sm:text-lg font-semibold text-gray-900 dark:text-white truncate">
+                      {selectedSession.__provider === 'cursor' ? (selectedSession.name || 'Untitled Session') : (selectedSession.summary || 'New Session')}
+                    </h2>
+                    <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                      {selectedProject.displayName} <span className="hidden sm:inline">• {selectedSession.id}</span>
+                    </div>
+                  </div>
+                ) : activeTab === 'chat' && !selectedSession ? (
+                  <div>
+                    <h2 className="text-base sm:text-lg font-semibold text-gray-900 dark:text-white">
+                      New Session
+                    </h2>
+                    <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                      {selectedProject.displayName}
+                    </div>
+                  </div>
+                ) : (
+                  <div>
+                    <h2 className="text-base sm:text-lg font-semibold text-gray-900 dark:text-white">
+                      {activeTab === 'files' ? 'Project Files' : activeTab === 'git' ? 'Source Control' : 'Project'}
+                    </h2>
+                    <div className="text-xs text-gray-500 dark:text-gray-400 truncate">
+                      {selectedProject.displayName}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
           

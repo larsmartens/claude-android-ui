@@ -43,8 +43,16 @@ export const api = {
   projects: () => authenticatedFetch('/api/projects'),
   sessions: (projectName, limit = 5, offset = 0) => 
     authenticatedFetch(`/api/projects/${projectName}/sessions?limit=${limit}&offset=${offset}`),
-  sessionMessages: (projectName, sessionId) =>
-    authenticatedFetch(`/api/projects/${projectName}/sessions/${sessionId}/messages`),
+  sessionMessages: (projectName, sessionId, limit = null, offset = 0) => {
+    const params = new URLSearchParams();
+    if (limit !== null) {
+      params.append('limit', limit);
+      params.append('offset', offset);
+    }
+    const queryString = params.toString();
+    const url = `/api/projects/${projectName}/sessions/${sessionId}/messages${queryString ? `?${queryString}` : ''}`;
+    return authenticatedFetch(url);
+  },
   renameProject: (projectName, displayName) =>
     authenticatedFetch(`/api/projects/${projectName}/rename`, {
       method: 'PUT',

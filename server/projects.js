@@ -1,16 +1,77 @@
+/**
+ * PROJECT DISCOVERY AND MANAGEMENT SYSTEM
+ * ========================================
+ * 
+ * This module manages project discovery for both Claude CLI and Cursor CLI sessions.
+ * 
+ * ## Architecture Overview
+ * 
+ * 1. **Claude Projects** (stored in ~/.claude/projects/)
+ *    - Each project is a directory named with the project path encoded (/ replaced with -)
+ *    - Contains .jsonl files with conversation history including 'cwd' field
+ *    - Project metadata stored in ~/.claude/project-config.json
+ * 
+ * 2. **Cursor Projects** (stored in ~/.cursor/chats/)
+ *    - Each project directory is named with MD5 hash of the absolute project path
+ *    - Example: /Users/john/myproject -> MD5 -> a1b2c3d4e5f6...
+ *    - Contains session directories with SQLite databases (store.db)
+ *    - Project path is NOT stored in the database - only in the MD5 hash
+ * 
+ * ## Project Discovery Strategy
+ * 
+ * 1. **Claude Projects Discovery**:
+ *    - Scan ~/.claude/projects/ directory for Claude project folders
+ *    - Extract actual project path from .jsonl files (cwd field)
+ *    - Fall back to decoded directory name if no sessions exist
+ * 
+ * 2. **Cursor Sessions Discovery**:
+ *    - For each KNOWN project (from Claude or manually added)
+ *    - Compute MD5 hash of the project's absolute path
+ *    - Check if ~/.cursor/chats/{md5_hash}/ directory exists
+ *    - Read session metadata from SQLite store.db files
+ * 
+ * 3. **Manual Project Addition**:
+ *    - Users can manually add project paths via UI
+ *    - Stored in ~/.claude/project-config.json with 'manuallyAdded' flag
+ *    - Allows discovering Cursor sessions for projects without Claude sessions
+ * 
+ * ## Critical Limitations
+ * 
+ * - **CANNOT discover Cursor-only projects**: From a quick check, there was no mention of
+ *   the cwd of each project. if someone has the time, you can try to reverse engineer it.
+ * 
+ * - **Project relocation breaks history**: If a project directory is moved or renamed,
+ *   the MD5 hash changes, making old Cursor sessions inaccessible unless the old
+ *   path is known and manually added.
+ * 
+ * ## Error Handling
+ * 
+ * - Missing ~/.claude directory is handled gracefully with automatic creation
+ * - ENOENT errors are caught and handled without crashing
+ * - Empty arrays returned when no projects/sessions exist
+ * 
+ * ## Caching Strategy
+ * 
+ * - Project directory extraction is cached to minimize file I/O
+ * - Cache is cleared when project configuration changes
+ * - Session data is fetched on-demand, not cached
+ */
+
 import { promises as fs } from 'fs';
 import fsSync from 'fs';
 import path from 'path';
 import readline from 'readline';
+import crypto from 'crypto';
+import sqlite3 from 'sqlite3';
+import { open } from 'sqlite';
+import os from 'os';
 
 // Cache for extracted project directories
 const projectDirectoryCache = new Map();
-let cacheTimestamp = Date.now();
 
 // Clear cache when needed (called when project files change)
 function clearProjectDirectoryCache() {
   projectDirectoryCache.clear();
-  cacheTimestamp = Date.now();
 }
 
 // Load project configuration file
@@ -27,7 +88,18 @@ async function loadProjectConfig() {
 
 // Save project configuration file
 async function saveProjectConfig(config) {
-  const configPath = path.join(process.env.HOME, '.claude', 'project-config.json');
+  const claudeDir = path.join(process.env.HOME, '.claude');
+  const configPath = path.join(claudeDir, 'project-config.json');
+  
+  // Ensure the .claude directory exists
+  try {
+    await fs.mkdir(claudeDir, { recursive: true });
+  } catch (error) {
+    if (error.code !== 'EEXIST') {
+      throw error;
+    }
+  }
+  
   await fs.writeFile(configPath, JSON.stringify(config, null, 2), 'utf8');
 }
 
@@ -75,6 +147,9 @@ async function extractProjectDirectory(projectName) {
   let extractedPath;
   
   try {
+    // Check if the project directory exists
+    await fs.access(projectDir);
+    
     const files = await fs.readdir(projectDir);
     const jsonlFiles = files.filter(file => file.endsWith('.jsonl'));
     
@@ -152,9 +227,14 @@ async function extractProjectDirectory(projectName) {
     return extractedPath;
     
   } catch (error) {
-    console.error(`Error extracting project directory for ${projectName}:`, error);
-    // Fall back to decoded project name
-    extractedPath = projectName.replace(/-/g, '/');
+    // If the directory doesn't exist, just use the decoded project name
+    if (error.code === 'ENOENT') {
+      extractedPath = projectName.replace(/-/g, '/');
+    } else {
+      console.error(`Error extracting project directory for ${projectName}:`, error);
+      // Fall back to decoded project name for other errors
+      extractedPath = projectName.replace(/-/g, '/');
+    }
     
     // Cache the fallback result too
     projectDirectoryCache.set(projectName, extractedPath);
@@ -170,7 +250,10 @@ async function getProjects() {
   const existingProjects = new Set();
   
   try {
-    // First, get existing projects from the file system
+    // Check if the .claude/projects directory exists
+    await fs.access(claudeDir);
+    
+    // First, get existing Claude projects from the file system
     const entries = await fs.readdir(claudeDir, { withFileTypes: true });
     
     for (const entry of entries) {
@@ -207,11 +290,22 @@ async function getProjects() {
           console.warn(`Could not load sessions for project ${entry.name}:`, e.message);
         }
         
+        // Also fetch Cursor sessions for this project
+        try {
+          project.cursorSessions = await getCursorSessions(actualProjectDir);
+        } catch (e) {
+          console.warn(`Could not load Cursor sessions for project ${entry.name}:`, e.message);
+          project.cursorSessions = [];
+        }
+        
         projects.push(project);
       }
     }
   } catch (error) {
-    console.error('Error reading projects directory:', error);
+    // If the directory doesn't exist (ENOENT), that's okay - just continue with empty projects
+    if (error.code !== 'ENOENT') {
+      console.error('Error reading projects directory:', error);
+    }
   }
   
   // Add manually configured projects that don't exist as folders yet
@@ -236,8 +330,16 @@ async function getProjects() {
           fullPath: actualProjectDir,
           isCustomName: !!projectConfig.displayName,
           isManuallyAdded: true,
-          sessions: []
+          sessions: [],
+          cursorSessions: []
         };
+      
+      // Try to fetch Cursor sessions for manual projects too
+      try {
+        project.cursorSessions = await getCursorSessions(actualProjectDir);
+      } catch (e) {
+        console.warn(`Could not load Cursor sessions for manual project ${projectName}:`, e.message);
+      }
       
       projects.push(project);
     }
@@ -385,8 +487,8 @@ async function parseJsonlSessions(filePath) {
   );
 }
 
-// Get messages for a specific session
-async function getSessionMessages(projectName, sessionId) {
+// Get messages for a specific session with pagination support
+async function getSessionMessages(projectName, sessionId, limit = null, offset = 0) {
   const projectDir = path.join(process.env.HOME, '.claude', 'projects', projectName);
   
   try {
@@ -394,7 +496,7 @@ async function getSessionMessages(projectName, sessionId) {
     const jsonlFiles = files.filter(file => file.endsWith('.jsonl'));
     
     if (jsonlFiles.length === 0) {
-      return [];
+      return { messages: [], total: 0, hasMore: false };
     }
     
     const messages = [];
@@ -423,12 +525,34 @@ async function getSessionMessages(projectName, sessionId) {
     }
     
     // Sort messages by timestamp
-    return messages.sort((a, b) => 
+    const sortedMessages = messages.sort((a, b) => 
       new Date(a.timestamp || 0) - new Date(b.timestamp || 0)
     );
+    
+    const total = sortedMessages.length;
+    
+    // If no limit is specified, return all messages (backward compatibility)
+    if (limit === null) {
+      return sortedMessages;
+    }
+    
+    // Apply pagination - for recent messages, we need to slice from the end
+    // offset 0 should give us the most recent messages
+    const startIndex = Math.max(0, total - offset - limit);
+    const endIndex = total - offset;
+    const paginatedMessages = sortedMessages.slice(startIndex, endIndex);
+    const hasMore = startIndex > 0;
+    
+    return {
+      messages: paginatedMessages,
+      total,
+      hasMore,
+      offset,
+      limit
+    };
   } catch (error) {
     console.error(`Error reading messages for session ${sessionId}:`, error);
-    return [];
+    return limit === null ? [] : { messages: [], total: 0, hasMore: false };
   }
 }
 
@@ -589,8 +713,120 @@ async function addProjectManually(projectPath, displayName = null) {
     fullPath: absolutePath,
     displayName: displayName || await generateDisplayName(projectName, absolutePath),
     isManuallyAdded: true,
-    sessions: []
+    sessions: [],
+    cursorSessions: []
   };
+}
+
+// Fetch Cursor sessions for a given project path
+async function getCursorSessions(projectPath) {
+  try {
+    // Calculate cwdID hash for the project path (Cursor uses MD5 hash)
+    const cwdId = crypto.createHash('md5').update(projectPath).digest('hex');
+    const cursorChatsPath = path.join(os.homedir(), '.cursor', 'chats', cwdId);
+    
+    // Check if the directory exists
+    try {
+      await fs.access(cursorChatsPath);
+    } catch (error) {
+      // No sessions for this project
+      return [];
+    }
+    
+    // List all session directories
+    const sessionDirs = await fs.readdir(cursorChatsPath);
+    const sessions = [];
+    
+    for (const sessionId of sessionDirs) {
+      const sessionPath = path.join(cursorChatsPath, sessionId);
+      const storeDbPath = path.join(sessionPath, 'store.db');
+      
+      try {
+        // Check if store.db exists
+        await fs.access(storeDbPath);
+        
+        // Capture store.db mtime as a reliable fallback timestamp
+        let dbStatMtimeMs = null;
+        try {
+          const stat = await fs.stat(storeDbPath);
+          dbStatMtimeMs = stat.mtimeMs;
+        } catch (_) {}
+
+        // Open SQLite database
+        const db = await open({
+          filename: storeDbPath,
+          driver: sqlite3.Database,
+          mode: sqlite3.OPEN_READONLY
+        });
+        
+        // Get metadata from meta table
+        const metaRows = await db.all(`
+          SELECT key, value FROM meta
+        `);
+        
+        // Parse metadata
+        let metadata = {};
+        for (const row of metaRows) {
+          if (row.value) {
+            try {
+              // Try to decode as hex-encoded JSON
+              const hexMatch = row.value.toString().match(/^[0-9a-fA-F]+$/);
+              if (hexMatch) {
+                const jsonStr = Buffer.from(row.value, 'hex').toString('utf8');
+                metadata[row.key] = JSON.parse(jsonStr);
+              } else {
+                metadata[row.key] = row.value.toString();
+              }
+            } catch (e) {
+              metadata[row.key] = row.value.toString();
+            }
+          }
+        }
+        
+        // Get message count
+        const messageCountResult = await db.get(`
+          SELECT COUNT(*) as count FROM blobs
+        `);
+        
+        await db.close();
+        
+        // Extract session info
+        const sessionName = metadata.title || metadata.sessionTitle || 'Untitled Session';
+        
+        // Determine timestamp - prefer createdAt from metadata, fall back to db file mtime
+        let createdAt = null;
+        if (metadata.createdAt) {
+          createdAt = new Date(metadata.createdAt).toISOString();
+        } else if (dbStatMtimeMs) {
+          createdAt = new Date(dbStatMtimeMs).toISOString();
+        } else {
+          createdAt = new Date().toISOString();
+        }
+        
+        sessions.push({
+          id: sessionId,
+          name: sessionName,
+          createdAt: createdAt,
+          lastActivity: createdAt, // For compatibility with Claude sessions
+          messageCount: messageCountResult.count || 0,
+          projectPath: projectPath
+        });
+        
+      } catch (error) {
+        console.warn(`Could not read Cursor session ${sessionId}:`, error.message);
+      }
+    }
+    
+    // Sort sessions by creation time (newest first)
+    sessions.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
+    
+    // Return only the first 5 sessions for performance
+    return sessions.slice(0, 5);
+    
+  } catch (error) {
+    console.error('Error fetching Cursor sessions:', error);
+    return [];
+  }
 }
 
 

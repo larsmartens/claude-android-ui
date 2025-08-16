@@ -60,14 +60,12 @@ function GitPanel({ selectedProject, isMobile }) {
   const fetchGitStatus = async () => {
     if (!selectedProject) return;
     
-    console.log('Fetching git status for project:', selectedProject.name, 'path:', selectedProject.path);
     
     setIsLoading(true);
     try {
       const response = await authenticatedFetch(`/api/git/status?project=${encodeURIComponent(selectedProject.name)}`);
       const data = await response.json();
       
-      console.log('Git status response:', data);
       
       if (data.error) {
         console.error('Git status error:', data.error);

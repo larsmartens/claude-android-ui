@@ -56,7 +56,6 @@ router.get('/status', async (req, res) => {
 
   try {
     const projectPath = await getActualProjectPath(project);
-    console.log('Git status for project:', project, '-> path:', projectPath);
     
     // Validate git repository
     await validateGitRepository(projectPath);
@@ -136,13 +135,16 @@ router.get('/diff', async (req, res) => {
              lines.map(line => `+${line}`).join('\n');
     } else {
       // Get diff for tracked files
-      const { stdout } = await execAsync(`git diff HEAD -- "${file}"`, { cwd: projectPath });
-      diff = stdout || '';
+      // First check for unstaged changes (working tree vs index)
+      const { stdout: unstagedDiff } = await execAsync(`git diff -- "${file}"`, { cwd: projectPath });
       
-      // If no unstaged changes, check for staged changes
-      if (!diff) {
+      if (unstagedDiff) {
+        // Show unstaged changes if they exist
+        diff = unstagedDiff;
+      } else {
+        // If no unstaged changes, check for staged changes (index vs HEAD)
         const { stdout: stagedDiff } = await execAsync(`git diff --cached -- "${file}"`, { cwd: projectPath });
-        diff = stagedDiff;
+        diff = stagedDiff || '';
       }
     }
     
@@ -192,7 +194,6 @@ router.get('/branches', async (req, res) => {
 
   try {
     const projectPath = await getActualProjectPath(project);
-    console.log('Git branches for project:', project, '-> path:', projectPath);
     
     // Validate git repository
     await validateGitRepository(projectPath);

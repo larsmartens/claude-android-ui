@@ -429,6 +429,7 @@ function Shell({ selectedProject, selectedSession, isActive }) {
                 projectPath: selectedProject.fullPath || selectedProject.path,
                 sessionId: selectedSession?.id,
                 hasSession: !!selectedSession,
+                provider: selectedSession?.__provider || 'claude',
                 cols: terminal.current.cols,
                 rows: terminal.current.rows
               };
@@ -523,11 +524,16 @@ function Shell({ selectedProject, selectedSession, isActive }) {
         <div className="flex items-center justify-between">
           <div className="flex items-center space-x-2">
             <div className={`w-2 h-2 rounded-full ${isConnected ? 'bg-green-500' : 'bg-red-500'}`} />
-            {selectedSession && (
-              <span className="text-xs text-blue-300">
-                ({selectedSession.summary.slice(0, 30)}...)
-              </span>
-            )}
+            {selectedSession && (() => {
+              const displaySessionName = selectedSession.__provider === 'cursor'
+                ? (selectedSession.name || 'Untitled Session')
+                : (selectedSession.summary || 'New Session');
+              return (
+                <span className="text-xs text-blue-300">
+                  ({displaySessionName.slice(0, 30)}...)
+                </span>
+              );
+            })()}
             {!selectedSession && (
               <span className="text-xs text-gray-400">(New Session)</span>
             )}
@@ -594,7 +600,12 @@ function Shell({ selectedProject, selectedSession, isActive }) {
               </button>
               <p className="text-gray-400 text-sm mt-3 px-2">
                 {selectedSession ? 
-                  `Resume session: ${selectedSession.summary.slice(0, 50)}...` : 
+                  (() => {
+                    const displaySessionName = selectedSession.__provider === 'cursor'
+                      ? (selectedSession.name || 'Untitled Session')
+                      : (selectedSession.summary || 'New Session');
+                    return `Resume session: ${displaySessionName.slice(0, 50)}...`;
+                  })() : 
                   'Start a new Claude session'
                 }
               </p>

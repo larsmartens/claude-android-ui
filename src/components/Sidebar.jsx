@@ -7,6 +7,7 @@ import { Input } from './ui/input';
 import { FolderOpen, Folder, Plus, MessageSquare, Clock, ChevronDown, ChevronRight, Edit3, Check, X, Trash2, Settings, FolderPlus, RefreshCw, Sparkles, Edit2, Star, Search } from 'lucide-react';
 import { cn } from '../lib/utils';
 import ClaudeLogo from './ClaudeLogo';
+import CursorLogo from './CursorLogo.jsx';
 import { api } from '../utils/api';
 
 // Move formatTimeAgo outside component to avoid recreation on every render
@@ -202,9 +203,12 @@ function Sidebar({
 
   // Helper function to get all sessions for a project (initial + additional)
   const getAllSessions = (project) => {
-    const initialSessions = project.sessions || [];
-    const additional = additionalSessions[project.name] || [];
-    return [...initialSessions, ...additional];
+    // Combine Claude and Cursor sessions; Sidebar will display icon per row
+    const claudeSessions = [...(project.sessions || []), ...(additionalSessions[project.name] || [])].map(s => ({ ...s, __provider: 'claude' }));
+    const cursorSessions = (project.cursorSessions || []).map(s => ({ ...s, __provider: 'cursor' }));
+    // Sort by most recent activity/date
+    const normalizeDate = (s) => new Date(s.__provider === 'cursor' ? s.createdAt : s.lastActivity);
+    return [...claudeSessions, ...cursorSessions].sort((a, b) => normalizeDate(b) - normalizeDate(a));
   };
 
   // Helper function to get the last activity date for a project
@@ -979,10 +983,18 @@ function Sidebar({
                         </div>
                       ) : (
                         getAllSessions(project).map((session) => {
+                          // Handle both Claude and Cursor session formats
+                          const isCursorSession = session.__provider === 'cursor';
+                          
                           // Calculate if session is active (within last 10 minutes)
-                          const sessionDate = new Date(session.lastActivity);
+                          const sessionDate = new Date(isCursorSession ? session.createdAt : session.lastActivity);
                           const diffInMinutes = Math.floor((currentTime - sessionDate) / (1000 * 60));
                           const isActive = diffInMinutes < 10;
+                          
+                          // Get session display values
+                          const sessionName = isCursorSession ? (session.name || 'Untitled Session') : (session.summary || 'New Session');
+                          const sessionTime = isCursorSession ? session.createdAt : session.lastActivity;
+                          const messageCount = session.messageCount || 0;
                           
                           return (
                           <div key={session.id} className="group relative">
@@ -1014,38 +1026,49 @@ function Sidebar({
                                     "w-5 h-5 rounded-md flex items-center justify-center flex-shrink-0",
                                     selectedSession?.id === session.id ? "bg-primary/10" : "bg-muted/50"
                                   )}>
-                                    <MessageSquare className={cn(
-                                      "w-3 h-3",
-                                      selectedSession?.id === session.id ? "text-primary" : "text-muted-foreground"
-                                    )} />
+                                    {isCursorSession ? (
+                                      <CursorLogo className="w-3 h-3" />
+                                    ) : (
+                                      <ClaudeLogo className="w-3 h-3" />
+                                    )}
                                   </div>
                                   <div className="min-w-0 flex-1">
                                     <div className="text-xs font-medium truncate text-foreground">
-                                      {session.summary || 'New Session'}
+                                      {sessionName}
                                     </div>
-                                    <div className="flex items-center gap-1 mt-0.5">
+                                <div className="flex items-center gap-1 mt-0.5">
                                       <Clock className="w-2.5 h-2.5 text-muted-foreground" />
                                       <span className="text-xs text-muted-foreground">
-                                        {formatTimeAgo(session.lastActivity, currentTime)}
+                                        {formatTimeAgo(sessionTime, currentTime)}
                                       </span>
-                                      {session.messageCount > 0 && (
+                                      {messageCount > 0 && (
                                         <Badge variant="secondary" className="text-xs px-1 py-0 ml-auto">
-                                          {session.messageCount}
+                                          {messageCount}
                                         </Badge>
                                       )}
+                                  {/* Provider tiny icon */}
+                                  <span className="ml-1 opacity-70">
+                                    {isCursorSession ? (
+                                      <CursorLogo className="w-3 h-3" />
+                                    ) : (
+                                      <ClaudeLogo className="w-3 h-3" />
+                                    )}
+                                  </span>
                                     </div>
                                   </div>
-                                  {/* Mobile delete button */}
-                                  <button
-                                    className="w-5 h-5 rounded-md bg-red-50 dark:bg-red-900/20 flex items-center justify-center active:scale-95 transition-transform opacity-70 ml-1"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      deleteSession(project.name, session.id);
-                                    }}
-                                    onTouchEnd={handleTouchClick(() => deleteSession(project.name, session.id))}
-                                  >
-                                    <Trash2 className="w-2.5 h-2.5 text-red-600 dark:text-red-400" />
-                                  </button>
+                                  {/* Mobile delete button - only for Claude sessions */}
+                                  {!isCursorSession && (
+                                    <button
+                                      className="w-5 h-5 rounded-md bg-red-50 dark:bg-red-900/20 flex items-center justify-center active:scale-95 transition-transform opacity-70 ml-1"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        deleteSession(project.name, session.id);
+                                      }}
+                                      onTouchEnd={handleTouchClick(() => deleteSession(project.name, session.id))}
+                                    >
+                                      <Trash2 className="w-2.5 h-2.5 text-red-600 dark:text-red-400" />
+                                    </button>
+                                  )}
                                 </div>
                               </div>
                             </div>
@@ -1062,26 +1085,39 @@ function Sidebar({
                                 onTouchEnd={handleTouchClick(() => onSessionSelect(session))}
                               >
                                 <div className="flex items-start gap-2 min-w-0 w-full">
-                                  <MessageSquare className="w-3 h-3 text-muted-foreground mt-0.5 flex-shrink-0" />
+                                  {isCursorSession ? (
+                                    <CursorLogo className="w-3 h-3 mt-0.5 flex-shrink-0" />
+                                  ) : (
+                                    <ClaudeLogo className="w-3 h-3 mt-0.5 flex-shrink-0" />
+                                  )}
                                   <div className="min-w-0 flex-1">
                                     <div className="text-xs font-medium truncate text-foreground">
-                                      {session.summary || 'New Session'}
+                                      {sessionName}
                                     </div>
                                     <div className="flex items-center gap-1 mt-0.5">
                                       <Clock className="w-2.5 h-2.5 text-muted-foreground" />
                                       <span className="text-xs text-muted-foreground">
-                                        {formatTimeAgo(session.lastActivity, currentTime)}
+                                        {formatTimeAgo(sessionTime, currentTime)}
                                       </span>
-                                      {session.messageCount > 0 && (
+                                      {messageCount > 0 && (
                                         <Badge variant="secondary" className="text-xs px-1 py-0 ml-auto">
-                                          {session.messageCount}
+                                          {messageCount}
                                         </Badge>
                                       )}
+                                      {/* Provider tiny icon */}
+                                      <span className="ml-1 opacity-70">
+                                        {isCursorSession ? (
+                                          <CursorLogo className="w-3 h-3" />
+                                        ) : (
+                                          <ClaudeLogo className="w-3 h-3" />
+                                        )}
+                                      </span>
                                     </div>
                                   </div>
                                 </div>
                               </Button>
-                              {/* Desktop hover buttons */}
+                              {/* Desktop hover buttons - only for Claude sessions */}
+                              {!isCursorSession && (
                               <div className="absolute right-2 top-1/2 transform -translate-y-1/2 flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-all duration-200">
                                 {editingSession === session.id ? (
                                   <>
@@ -1168,6 +1204,7 @@ function Sidebar({
                                   </>
                                 )}
                               </div>
+                              )}
                             </div>
                           </div>
                           );

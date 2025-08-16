@@ -37,9 +37,11 @@ import mime from 'mime-types';
 
 import { getProjects, getSessions, getSessionMessages, renameProject, deleteSession, deleteProject, addProjectManually, extractProjectDirectory, clearProjectDirectoryCache } from './projects.js';
 import { spawnClaude, abortClaudeSession } from './claude-cli.js';
+import { spawnCursor, abortCursorSession } from './cursor-cli.js';
 import gitRoutes from './routes/git.js';
 import authRoutes from './routes/auth.js';
 import mcpRoutes from './routes/mcp.js';
+import cursorRoutes from './routes/cursor.js';
 import { initializeDatabase } from './database/db.js';
 import { validateApiKey, authenticateToken, authenticateWebSocket } from './middleware/auth.js';
 
@@ -174,6 +176,9 @@ app.use('/api/git', authenticateToken, gitRoutes);
 // MCP API Routes (protected)
 app.use('/api/mcp', authenticateToken, mcpRoutes);
 
+// Cursor API Routes (protected)
+app.use('/api/cursor', authenticateToken, cursorRoutes);
+
 // Static files served after API routes
 app.use(express.static(path.join(__dirname, '../dist')));
 
@@ -213,8 +218,22 @@ app.get('/api/projects/:projectName/sessions', authenticateToken, async (req, re
 app.get('/api/projects/:projectName/sessions/:sessionId/messages', authenticateToken, async (req, res) => {
     try {
         const { projectName, sessionId } = req.params;
-        const messages = await getSessionMessages(projectName, sessionId);
-        res.json({ messages });
+        const { limit, offset } = req.query;
+        
+        // Parse limit and offset if provided
+        const parsedLimit = limit ? parseInt(limit, 10) : null;
+        const parsedOffset = offset ? parseInt(offset, 10) : 0;
+        
+        const result = await getSessionMessages(projectName, sessionId, parsedLimit, parsedOffset);
+        
+        // Handle both old and new response formats
+        if (Array.isArray(result)) {
+            // Backward compatibility: no pagination parameters were provided
+            res.json({ messages: result });
+        } else {
+            // New format with pagination info
+            res.json(result);
+        }
     } catch (error) {
         res.status(500).json({ error: error.message });
     }
@@ -459,12 +478,39 @@ function handleChatConnection(ws) {
                 console.log('📁 Project:', data.options?.projectPath || 'Unknown');
                 console.log('🔄 Session:', data.options?.sessionId ? 'Resume' : 'New');
                 await spawnClaude(data.command, data.options, ws);
+            } else if (data.type === 'cursor-command') {
+                console.log('🖱️ Cursor message:', data.command || '[Continue/Resume]');
+                console.log('📁 Project:', data.options?.cwd || 'Unknown');
+                console.log('🔄 Session:', data.options?.sessionId ? 'Resume' : 'New');
+                console.log('🤖 Model:', data.options?.model || 'default');
+                await spawnCursor(data.command, data.options, ws);
+            } else if (data.type === 'cursor-resume') {
+                // Backward compatibility: treat as cursor-command with resume and no prompt
+                console.log('🖱️ Cursor resume session (compat):', data.sessionId);
+                await spawnCursor('', {
+                    sessionId: data.sessionId,
+                    resume: true,
+                    cwd: data.options?.cwd
+                }, ws);
             } else if (data.type === 'abort-session') {
                 console.log('🛑 Abort session request:', data.sessionId);
-                const success = abortClaudeSession(data.sessionId);
+                const provider = data.provider || 'claude';
+                const success = provider === 'cursor' 
+                    ? abortCursorSession(data.sessionId)
+                    : abortClaudeSession(data.sessionId);
                 ws.send(JSON.stringify({
                     type: 'session-aborted',
                     sessionId: data.sessionId,
+                    provider,
+                    success
+                }));
+            } else if (data.type === 'cursor-abort') {
+                console.log('🛑 Abort Cursor session:', data.sessionId);
+                const success = abortCursorSession(data.sessionId);
+                ws.send(JSON.stringify({
+                    type: 'session-aborted',
+                    sessionId: data.sessionId,
+                    provider: 'cursor',
                     success
                 }));
             }
@@ -499,14 +545,17 @@ function handleShellConnection(ws) {
                 const projectPath = data.projectPath || process.cwd();
                 const sessionId = data.sessionId;
                 const hasSession = data.hasSession;
+                const provider = data.provider || 'claude';
 
                 console.log('🚀 Starting shell in:', projectPath);
                 console.log('📋 Session info:', hasSession ? `Resume session ${sessionId}` : 'New session');
+                console.log('🤖 Provider:', provider);
 
                 // First send a welcome message
+                const providerName = provider === 'cursor' ? 'Cursor' : 'Claude';
                 const welcomeMsg = hasSession ?
-                    `\x1b[36mResuming Claude session ${sessionId} in: ${projectPath}\x1b[0m\r\n` :
-                    `\x1b[36mStarting new Claude session in: ${projectPath}\x1b[0m\r\n`;
+                    `\x1b[36mResuming ${providerName} session ${sessionId} in: ${projectPath}\x1b[0m\r\n` :
+                    `\x1b[36mStarting new ${providerName} session in: ${projectPath}\x1b[0m\r\n`;
 
                 ws.send(JSON.stringify({
                     type: 'output',
@@ -514,20 +563,38 @@ function handleShellConnection(ws) {
                 }));
 
                 try {
-                    // Prepare the shell command adapted to the platform
+                    // Prepare the shell command adapted to the platform and provider
                     let shellCommand;
-                    if (os.platform() === 'win32') {
-                        if (hasSession && sessionId) {
-                            // Try to resume session, but with fallback to new session if it fails
-                            shellCommand = `Set-Location -Path "${projectPath}"; claude --resume ${sessionId}; if ($LASTEXITCODE -ne 0) { claude }`;
+                    if (provider === 'cursor') {
+                        // Use cursor-agent command
+                        if (os.platform() === 'win32') {
+                            if (hasSession && sessionId) {
+                                shellCommand = `Set-Location -Path "${projectPath}"; cursor-agent --resume="${sessionId}"`;
+                            } else {
+                                shellCommand = `Set-Location -Path "${projectPath}"; cursor-agent`;
+                            }
                         } else {
-                shellCommand = `Set-Location -Path "${projectPath}"; claude`;
+                            if (hasSession && sessionId) {
+                                shellCommand = `cd "${projectPath}" && cursor-agent --resume="${sessionId}"`;
+                            } else {
+                                shellCommand = `cd "${projectPath}" && cursor-agent`;
+                            }
                         }
                     } else {
-                        if (hasSession && sessionId) {
-                            shellCommand = `cd "${projectPath}" && claude --resume ${sessionId} || claude`;
+                        // Use claude command (default)
+                        if (os.platform() === 'win32') {
+                            if (hasSession && sessionId) {
+                                // Try to resume session, but with fallback to new session if it fails
+                                shellCommand = `Set-Location -Path "${projectPath}"; claude --resume ${sessionId}; if ($LASTEXITCODE -ne 0) { claude }`;
+                            } else {
+                                shellCommand = `Set-Location -Path "${projectPath}"; claude`;
+                            }
                         } else {
-                shellCommand = `cd "${projectPath}" && claude`;
+                            if (hasSession && sessionId) {
+                                shellCommand = `cd "${projectPath}" && claude --resume ${sessionId} || claude`;
+                            } else {
+                                shellCommand = `cd "${projectPath}" && claude`;
+                            }
                         }
                     }
 
@@ -1003,7 +1070,7 @@ async function startServer() {
             console.log(`Claude Code UI server running on http://0.0.0.0:${PORT}`);
 
             // Start watching the projects folder for changes
-            await setupProjectsWatcher(); // Re-enabled with better-sqlite3
+            await setupProjectsWatcher(); 
         });
     } catch (error) {
         console.error('❌ Failed to start server:', error);
